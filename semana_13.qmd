@@ -1,0 +1,207 @@
+## Objetivos
+
+1. Comprender la reducción de dimensionalidad.
+2. Interpretar varianza explicada y contribución de variables.
+3. Identificar grupos de animales mediante K-means.
+4. Reconocer que son métodos exploratorios, no pruebas causales.
+
+## Preparación
+
+```{r}
+#| label: paquetes
+library(here)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(FactoMineR)
+library(factoextra)
+library(cluster)
+```
+
+```{r}
+#| label: carpetas
+dir.create(here("resultados", "semana_13", "tablas"), recursive = TRUE, showWarnings = FALSE)
+dir.create(here("resultados", "semana_13", "graficos"), recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: datos
+datos <- read_csv(
+  here("datos", "procesados", "base_bovinos_procesada.csv"),
+  show_col_types = FALSE
+)
+```
+
+Seleccionamos variables numéricas relacionadas con condición clínica y
+producción. Como la imputación se enseñará en la semana 14, aquí se trabaja
+con casos completos y se informa cuántos registros quedan.
+
+```{r}
+#| label: variables-pca
+variables_pca <- datos |>
+  select(
+    peso_kg, condicion_corporal, produccion_leche_l_dia, temperatura_c,
+    frecuencia_cardiaca_lpm, hemoglobina_g_d_l, leucocitos_10_9_l,
+    proteinas_totales_g_d_l, rcc_miles_m_l
+  ) |>
+  drop_na()
+
+nrow(datos)
+nrow(variables_pca)
+```
+
+Se analizan `r nrow(variables_pca)` de `r nrow(datos)` registros
+(casos completos).
+
+## Análisis de componentes principales
+
+`scale.unit = TRUE` estandariza las variables. Es necesario porque se expresan
+en unidades muy diferentes: kg, L/día, °C y concentraciones sanguíneas.
+
+```{r}
+#| label: pca
+resultado_pca <- PCA(
+  variables_pca,
+  scale.unit = TRUE,
+  ncp = 5,
+  graph = FALSE
+)
+```
+
+```{r}
+#| label: tbl-eig
+#| tbl-cap: "Valores propios y varianza explicada por componente."
+round(resultado_pca$eig, 2)
+```
+
+```{r}
+#| label: tbl-contrib
+#| tbl-cap: "Contribución (%) de cada variable a las cinco primeras dimensiones."
+round(resultado_pca$var$contrib, 2)
+```
+
+```{r}
+#| label: fig-varianza
+#| fig-cap: "Porcentaje de varianza explicada por cada componente."
+#| fig-width: 8
+#| fig-height: 5
+g_varianza <- fviz_eig(
+  resultado_pca,
+  addlabels = TRUE,
+  ylim = c(0, 40)
+)
+
+g_varianza
+```
+
+```{r}
+#| label: fig-variables
+#| fig-cap: "Círculo de correlaciones coloreado según la contribución de cada variable."
+#| fig-width: 8
+#| fig-height: 6
+g_variables <- fviz_pca_var(
+  resultado_pca,
+  col.var = "contrib",
+  gradient.cols = c("#2563EB", "#F59E0B", "#DC2626"),
+  repel = TRUE
+)
+
+g_variables
+```
+
+```{r}
+#| label: guardar-pca
+#| include: false
+ggplot2::ggsave(here("resultados", "semana_13", "graficos", "varianza_pca.png"), g_varianza, width = 8, height = 5, dpi = 300)
+ggplot2::ggsave(here("resultados", "semana_13", "graficos", "variables_pca.png"), g_variables, width = 8, height = 6, dpi = 300)
+```
+
+## K-means
+
+K-means es sensible a la escala. `scale()` centra y estandariza.
+
+```{r}
+#| label: escalar
+datos_escalados <- scale(variables_pca)
+
+set.seed(2026)
+```
+
+El gráfico de silueta ayuda a explorar un número razonable de grupos.
+
+```{r}
+#| label: fig-numero-grupos
+#| fig-cap: "Ancho promedio de silueta según el número de grupos (k)."
+#| fig-width: 8
+#| fig-height: 5
+g_numero_grupos <- fviz_nbclust(
+  datos_escalados,
+  kmeans,
+  method = "silhouette",
+  k.max = 6,
+  nstart = 25
+)
+
+g_numero_grupos
+```
+
+Para la práctica se fija k = 3 y se interpreta cada perfil.
+
+```{r}
+#| label: kmeans
+modelo_kmeans <- kmeans(
+  datos_escalados,
+  centers = 3,
+  nstart = 50
+)
+
+table(modelo_kmeans$cluster)
+```
+
+```{r}
+#| label: tbl-perfiles
+#| tbl-cap: "Perfil promedio de cada cluster (variables en su escala original)."
+perfiles <- variables_pca |>
+  mutate(cluster = factor(modelo_kmeans$cluster)) |>
+  group_by(cluster) |>
+  summarise(across(everything(), mean), .groups = "drop")
+
+perfiles |>
+  mutate(across(where(is.numeric), \(x) round(x, 2)))
+```
+
+```{r}
+#| label: fig-clusters
+#| fig-cap: "Animales agrupados por K-means (k = 3), proyectados en las dos primeras componentes."
+#| fig-width: 8
+#| fig-height: 6
+g_clusters <- fviz_cluster(
+  modelo_kmeans,
+  data = datos_escalados,
+  geom = "point",
+  ellipse.type = "convex"
+)
+
+g_clusters
+```
+
+::: {.callout-important}
+PCA y K-means son métodos exploratorios: describen patrones y agrupaciones en
+los datos, pero no permiten concluir relaciones causales.
+:::
+
+## Exportación de resultados
+
+```{r}
+#| label: exportar
+ggplot2::ggsave(here("resultados", "semana_13", "graficos", "numero_clusters.png"), g_numero_grupos, width = 8, height = 5, dpi = 300)
+ggplot2::ggsave(here("resultados", "semana_13", "graficos", "clusters.png"), g_clusters, width = 8, height = 6, dpi = 300)
+
+write_csv(perfiles, here("resultados", "semana_13", "tablas", "perfiles_clusters.csv"))
+
+write_csv(
+  as.data.frame(resultado_pca$eig) |>
+    tibble::rownames_to_column("componente"),
+  here("resultados", "semana_13", "tablas", "varianza_explicada_pca.csv")
+)
+```
